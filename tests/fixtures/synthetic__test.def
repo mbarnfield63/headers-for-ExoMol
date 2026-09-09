@@ -1,0 +1,12 @@
+EXOMOL.def                          # ID
+1.0                                  # Version number
+SYN                                  # Molecule name
+1H2-16O_test                         # Isotopologue name
+18.010565                            # Isotopologue mass (Da)
+0                                    # Predissociation availability (unrecognized field, simulates future .def drift)
+2                                    # Number of quantum labels
+v                                    # quantum label
+parity                               # quantum label
+1                                    # Lifetime availability (0 or 1)
+0                                    # Landé g-factor availability (0 or 1)
+0                                    # Uncertainty availability (0 or 1)

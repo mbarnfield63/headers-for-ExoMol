@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+tests/fixtures/*.header
+tests/fixtures/*.schema.json
+tests/fixtures/*.headered
+/data/
