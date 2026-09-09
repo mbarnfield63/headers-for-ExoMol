@@ -11,6 +11,7 @@ unrecognized lines) but now the secondary path, not the primary one.
 Either way, parsing never touches the paired .states/.trans files —
 building a Schema needs only the .def(.json).
 """
+
 from __future__ import annotations
 
 import json
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 # --- shared result type -----------------------------------------------
+
 
 @dataclass
 class Column:
@@ -32,9 +34,11 @@ class Column:
 @dataclass
 class Schema:
     source: Path
-    columns: list = field(default_factory=list)         # ordered Column list
-    flags: dict = field(default_factory=dict)            # lifetime/lande/uncertainty availability
-    extra_metadata: dict = field(default_factory=dict)   # unrecognized/unused fields, kept not dropped
+    columns: list = field(default_factory=list)  # ordered Column list
+    flags: dict = field(default_factory=dict)  # lifetime/lande/uncertainty availability
+    extra_metadata: dict = field(
+        default_factory=dict
+    )  # unrecognized/unused fields, kept not dropped
     trans_file_count: int = 1
 
     def states_columns(self) -> list:
@@ -56,6 +60,7 @@ class Schema:
 
 
 # --- JSON .def.json parser (current ExoMol format) ---------------------
+
 
 def _dtype_from_ffmt(ffmt: str) -> str:
     """Fortran format code -> dtype. I=int, F/E/ES/D/G=float, A=str."""
@@ -94,16 +99,27 @@ def parse_def_json(path: Path) -> Schema:
         name = f.get("name", "?")
         desc = f.get("desc", "")
         schema.columns.append(
-            Column(name, _dtype_from_ffmt(f.get("ffmt", "")), _unit_from_desc(desc), desc)
+            Column(
+                name, _dtype_from_ffmt(f.get("ffmt", "")), _unit_from_desc(desc), desc
+            )
         )
 
-    schema.trans_file_count = data.get("dataset", {}).get("transitions", {}) \
+    schema.trans_file_count = (
+        data.get("dataset", {})
+        .get("transitions", {})
         .get("number_of_transition_files", 1)
+    )
 
     # Keep top-level metadata that isn't part of the column schema —
     # visible, not lost, same "never drop what you don't specially
     # handle" principle as the legacy parser's extra_metadata.
-    for key in ("isotopologue", "atoms", "irreducible_representations", "partition_function", "broad"):
+    for key in (
+        "isotopologue",
+        "atoms",
+        "irreducible_representations",
+        "partition_function",
+        "broad",
+    ):
         if key in data:
             schema.extra_metadata[key] = data[key]
 
@@ -115,7 +131,9 @@ def parse_def_json(path: Path) -> Schema:
 _FLAG_KEYWORDS = {
     "uncertainty": re.compile(r"uncertain", re.I),
     "lifetime": re.compile(r"lifetime", re.I),
-    "lande": re.compile(r"land", re.I),  # covers "Lande"/"Landé" without depending on encoding
+    "lande": re.compile(
+        r"land", re.I
+    ),  # covers "Lande"/"Landé" without depending on encoding
 }
 _QUANTA_COUNT_KEYWORD = re.compile(r"number of quantum", re.I)
 _QUANTA_LABEL_KEYWORD = re.compile(r"quantum (label|number)|label of.*quantum", re.I)
@@ -128,10 +146,9 @@ _BASE_COLUMNS = [
     ("J", "float64", None, "total angular momentum quantum number"),
 ]
 
-# ponytail: order here is best-effort (no legacy-format sample calibrated
-# against yet — both real files obtained so far are already .def.json).
-# A wrong guess degrades to a column-count-mismatch warning at read time
-# (cli.py), never a silent mislabel.
+# Legacy-format optional-column order is unverified against a real
+# pre-JSON .def (none obtained yet). Wrong guess only warns (cli.py
+# mismatch check), never silently mislabels.
 _OPTIONAL_COLUMNS = {
     "uncertainty": ("unc", "float64", "cm-1", "uncertainty in the energy"),
     "lifetime": ("tau", "float64", "s", "radiative lifetime"),
@@ -204,6 +221,7 @@ def parse_def_text(path: Path) -> Schema:
 
 
 # --- dispatch ------------------------------------------------------------
+
 
 def parse_def(path) -> Schema:
     """Parse a .def or .def.json file into a Schema. Format is detected

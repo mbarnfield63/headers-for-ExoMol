@@ -3,6 +3,7 @@
 Subcommands: inspect, sidecar, inject, convert. See DESIGN.md for the
 rationale behind every choice below.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,8 +50,11 @@ def resolve_def_files(data_path: Path, explicit_def) -> list:
     if not found:
         sys.exit(f"error: no .def found next to {data_path}; pass one explicitly")
     if len(found) > 1:
-        print(f"multiple .def candidates found, running against all: "
-              f"{', '.join(p.name for p in found)}", file=sys.stderr)
+        print(
+            f"multiple .def candidates found, running against all: "
+            f"{', '.join(p.name for p in found)}",
+            file=sys.stderr,
+        )
     else:
         print(f"using {found[0].name}", file=sys.stderr)
     return found
@@ -77,7 +81,10 @@ def _resolved_columns(schema: Schema, data_path: Path):
         for extra in range(len(names), n):
             names.append(f"col_{extra}")
         from .def_parser import Column
-        return [Column(n_, "float64", None, "see ExoMol .trans spec") for n_ in names][:n]
+
+        return [Column(n_, "float64", None, "see ExoMol .trans spec") for n_ in names][
+            :n
+        ]
 
     columns = schema.states_columns()
     actual = sniff_column_count(data_path)
@@ -88,6 +95,7 @@ def _resolved_columns(schema: Schema, data_path: Path):
             file=sys.stderr,
         )
         from .def_parser import Column
+
         if actual > len(columns):
             columns = columns + [
                 Column(f"col_{i}", "str", None, "unrecognized column")
@@ -119,9 +127,21 @@ def cmd_sidecar(args):
         header_path.write_text(Schema.render_c(columns) + "\n", encoding="utf-8")
 
         schema_path = data_path.with_suffix(data_path.suffix + ".schema.json")
-        schema_path.write_text(json.dumps(
-            [{"name": c.name, "dtype": c.dtype, "unit": c.unit, "description": c.description}
-             for c in columns], indent=2), encoding="utf-8")
+        schema_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "name": c.name,
+                        "dtype": c.dtype,
+                        "unit": c.unit,
+                        "description": c.description,
+                    }
+                    for c in columns
+                ],
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
         print(f"wrote {header_path.name}, {schema_path.name}")
 
@@ -176,12 +196,19 @@ def cmd_convert(args):
         states_columns = _resolved_columns(states_schema, states_path)
         n_quanta = len(states_columns) - 4
         est = n_quanta * 2
-        print(f"--enrich-quanta: adding ~{est} columns per row "
-              f"(states file loaded into memory)", file=sys.stderr)
+        print(
+            f"--enrich-quanta: adding ~{est} columns per row "
+            f"(states file loaded into memory)",
+            file=sys.stderr,
+        )
         upper_lookup = _quanta_lookup(states_path, states_columns, "_upper")
         lower_lookup = _quanta_lookup(states_path, states_columns, "_lower")
         quanta_names = [c.name for c in states_columns[4:]]
-        names = names + [f"{n}_upper" for n in quanta_names] + [f"{n}_lower" for n in quanta_names]
+        names = (
+            names
+            + [f"{n}_upper" for n in quanta_names]
+            + [f"{n}_lower" for n in quanta_names]
+        )
         # fallback for a trans row whose id isn't found in .states (data
         # error) — keeps column count aligned instead of silently
         # shifting every field after it.
@@ -198,8 +225,11 @@ def cmd_convert(args):
                 continue
             row = fields
             if upper_lookup is not None:
-                row = row + list(upper_lookup.get(fields[0], missing_upper).values()) \
+                row = (
+                    row
+                    + list(upper_lookup.get(fields[0], missing_upper).values())
                     + list(lower_lookup.get(fields[1], missing_lower).values())
+                )
             dst.write(",".join(row) + "\n")
             row_count += 1
             if row_count % 100_000 == 0:
@@ -207,9 +237,16 @@ def cmd_convert(args):
         print(f"\r{row_count:,} rows done -> {out_path}", file=sys.stderr)
 
     schema_path = out_path.with_suffix(out_path.suffix + ".schema.json")
-    schema_path.write_text(json.dumps(
-        [{"name": n, "dtype": "str", "unit": None, "description": ""} for n in names],
-        indent=2), encoding="utf-8")
+    schema_path.write_text(
+        json.dumps(
+            [
+                {"name": n, "dtype": "str", "unit": None, "description": ""}
+                for n in names
+            ],
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def build_parser():
@@ -217,8 +254,12 @@ def build_parser():
     sub = p.add_subparsers(dest="command", required=True)
 
     def add_def_arg(sp):
-        sp.add_argument("--def", dest="def_file", default=None,
-                         help="explicit .def path (auto-discovered by stem if omitted)")
+        sp.add_argument(
+            "--def",
+            dest="def_file",
+            default=None,
+            help="explicit .def path (auto-discovered by stem if omitted)",
+        )
 
     p_inspect = sub.add_parser("inspect", help="print schema derived from a .def")
     p_inspect.add_argument("def_file")
@@ -229,7 +270,9 @@ def build_parser():
     add_def_arg(p_sidecar)
     p_sidecar.set_defaults(func=cmd_sidecar)
 
-    p_inject = sub.add_parser("inject", help="write a copy with a bare header line prepended")
+    p_inject = sub.add_parser(
+        "inject", help="write a copy with a bare header line prepended"
+    )
     p_inject.add_argument("data_file")
     add_def_arg(p_inject)
     p_inject.set_defaults(func=cmd_inject)
@@ -238,8 +281,11 @@ def build_parser():
     p_convert.add_argument("data_file")
     p_convert.add_argument("-o", "--out", required=True)
     p_convert.add_argument("--compress", choices=["none", "gz", "bz2"], default="none")
-    p_convert.add_argument("--enrich-quanta", default=None,
-                            help="path to .states file to join full quanta into a .trans convert")
+    p_convert.add_argument(
+        "--enrich-quanta",
+        default=None,
+        help="path to .states file to join full quanta into a .trans convert",
+    )
     add_def_arg(p_convert)
     p_convert.set_defaults(func=cmd_convert)
 

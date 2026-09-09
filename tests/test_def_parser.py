@@ -8,6 +8,7 @@ mechanism, especially label-driven drift tolerance (Q17): the fixture
 that no keyword pattern recognizes, to check it's captured rather than
 breaking the parse.
 """
+
 import sys
 from pathlib import Path
 
@@ -27,9 +28,12 @@ def test_flags_and_quanta():
 
 def test_unrecognized_field_kept_not_dropped():
     schema = parse_def(FIXTURES / "synthetic__test.def")
-    matched = [v for k, v in schema.extra_metadata.items()
-               if "predissociation" in k.lower()]
-    assert matched == ["0"], "unrecognized .def line should survive as metadata, not vanish"
+    matched = [
+        v for k, v in schema.extra_metadata.items() if "predissociation" in k.lower()
+    ]
+    assert matched == [
+        "0"
+    ], "unrecognized .def line should survive as metadata, not vanish"
 
 
 def test_states_columns_order():
