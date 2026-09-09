@@ -35,6 +35,16 @@ canonical ExoMol database files themselves.
   have to match — hyphens aren't valid in import names anyway), console
   script stays `exomol-headers` (shorter to type than the full package
   name). PyPI name availability check deferred to actual publish time.
+- Repo is live: https://github.com/mbarnfield63/headers-for-ExoMol
+  (public, pushed from the initial scaffold commit). Local clone folder
+  is still named `ExoMol_headers`, not `headers-for-ExoMol` — an
+  in-session rename attempt was blocked by an OS-level lock on the
+  working directory (something holds it open for the session's
+  lifetime), not worth fighting; doesn't affect the remote name either
+  way. Three names now exist by design, each for its own context: repo/
+  PyPI (`headers-for-ExoMol`), CLI command (`exomol-headers`), local
+  folder (`ExoMol_headers`, cosmetic only, rename whenever convenient
+  outside an active session).
 - Core dependency footprint: **stdlib only** (`csv`, `gzip`, `bz2`, `pathlib`,
   `argparse`). Python 3.9+.
 - Optional extras, guarded imports:
