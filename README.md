@@ -12,9 +12,20 @@ meaning lives only in the `.def` file, in a format not everyone wants to
 parse by hand. This tool reads a `.def` and gives you the column labels
 back in whichever shape suits your workflow.
 
+Repo: https://github.com/mbarnfield63/headers-for-ExoMol
+
 See [`DESIGN.md`](DESIGN.md) for the full design rationale.
 
 ## Install
+
+Not on PyPI yet. For now:
+
+```
+git clone https://github.com/mbarnfield63/headers-for-ExoMol
+pip install -e headers-for-ExoMol
+```
+
+Once published:
 
 ```
 pip install headers-for-ExoMol          # stdlib only, everything below works
