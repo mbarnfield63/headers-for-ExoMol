@@ -8,3 +8,5 @@ tests/fixtures/*.header
 tests/fixtures/*.schema.json
 tests/fixtures/*.headered
 /data/
+graphify-out/
+.claude/
