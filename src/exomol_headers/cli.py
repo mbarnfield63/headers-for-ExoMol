@@ -11,6 +11,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import engines
 from .def_parser import Schema, parse_def
 from .io_utils import open_output, open_text, sniff_column_count
 
@@ -19,10 +20,10 @@ _COMPRESSED_SUFFIXES = (".bz2", ".gz")
 
 
 def discover_def_files(data_path: Path) -> list:
-    """Find the .def(s) sharing a data file's naming stem.
+    """Find the .def.json(s) sharing a data file's naming stem.
 
-    Exact stem match wins when present. Otherwise every .def in the same
-    directory is a candidate — caller runs against all of them (never
+    Exact stem match wins when present. Otherwise every .def.json in the
+    same directory is a candidate — caller runs against all of them (never
     guesses, never blocks on ambiguity; see DESIGN.md CLI shape).
     """
     directory = data_path.parent
@@ -36,11 +37,10 @@ def discover_def_files(data_path: Path) -> list:
             stem = stem[: -len(suffix)]
             break
 
-    for candidate_suffix in (".def.json", ".def"):
-        exact = directory / f"{stem}{candidate_suffix}"
-        if exact.exists():
-            return [exact]
-    return sorted(directory.glob("*.def.json")) + sorted(directory.glob("*.def"))
+    exact = directory / f"{stem}.def.json"
+    if exact.exists():
+        return [exact]
+    return sorted(directory.glob("*.def.json"))
 
 
 def resolve_def_files(data_path: Path, explicit_def) -> list:
@@ -48,10 +48,10 @@ def resolve_def_files(data_path: Path, explicit_def) -> list:
         return [Path(explicit_def)]
     found = discover_def_files(data_path)
     if not found:
-        sys.exit(f"error: no .def found next to {data_path}; pass one explicitly")
+        sys.exit(f"error: no .def.json found next to {data_path}; pass one explicitly")
     if len(found) > 1:
         print(
-            f"multiple .def candidates found, running against all: "
+            f"multiple .def.json candidates found, running against all: "
             f"{', '.join(p.name for p in found)}",
             file=sys.stderr,
         )
@@ -187,6 +187,8 @@ def cmd_convert(args):
     columns = _resolved_columns(schema, data_path)
     names = [c.name for c in columns]
 
+    enrich_quanta_names = None
+    states_path = None
     upper_lookup = lower_lookup = None
     if args.enrich_quanta:
         if not _is_trans(data_path):
@@ -201,40 +203,51 @@ def cmd_convert(args):
             f"(states file loaded into memory)",
             file=sys.stderr,
         )
-        upper_lookup = _quanta_lookup(states_path, states_columns, "_upper")
-        lower_lookup = _quanta_lookup(states_path, states_columns, "_lower")
-        quanta_names = [c.name for c in states_columns[4:]]
+        enrich_quanta_names = [c.name for c in states_columns[4:]]
         names = (
             names
-            + [f"{n}_upper" for n in quanta_names]
-            + [f"{n}_lower" for n in quanta_names]
+            + [f"{n}_upper" for n in enrich_quanta_names]
+            + [f"{n}_lower" for n in enrich_quanta_names]
         )
-        # fallback for a trans row whose id isn't found in .states (data
-        # error) — keeps column count aligned instead of silently
-        # shifting every field after it.
-        missing_upper = {f"{n}_upper": "" for n in quanta_names}
-        missing_lower = {f"{n}_lower": "" for n in quanta_names}
+        if args.engine == "python":
+            upper_lookup = _quanta_lookup(states_path, states_columns, "_upper")
+            lower_lookup = _quanta_lookup(states_path, states_columns, "_lower")
+            # fallback for a trans row whose id isn't found in .states (data
+            # error) — keeps column count aligned instead of silently
+            # shifting every field after it.
+            missing_upper = {f"{n}_upper": "" for n in enrich_quanta_names}
+            missing_lower = {f"{n}_lower": "" for n in enrich_quanta_names}
 
     out_path = Path(args.out)
-    with open_text(data_path) as src, open_output(out_path, args.compress) as dst:
-        dst.write(",".join(names) + "\n")
-        row_count = 0
-        for line in src:
-            fields = line.split()
-            if not fields:
-                continue
-            row = fields
-            if upper_lookup is not None:
-                row = (
-                    row
-                    + list(upper_lookup.get(fields[0], missing_upper).values())
-                    + list(lower_lookup.get(fields[1], missing_lower).values())
-                )
-            dst.write(",".join(row) + "\n")
-            row_count += 1
-            if row_count % 100_000 == 0:
-                print(f"\r{row_count:,} rows...", end="", file=sys.stderr)
-        print(f"\r{row_count:,} rows done -> {out_path}", file=sys.stderr)
+
+    if args.engine == "polars":
+        base_names = [c.name for c in columns]
+        enrich = (
+            {"states_path": states_path, "quanta_names": enrich_quanta_names}
+            if enrich_quanta_names is not None
+            else None
+        )
+        engines.convert(data_path, out_path, args.compress, base_names, enrich)
+    else:
+        with open_text(data_path) as src, open_output(out_path, args.compress) as dst:
+            dst.write(",".join(names) + "\n")
+            row_count = 0
+            for line in src:
+                fields = line.split()
+                if not fields:
+                    continue
+                row = fields
+                if upper_lookup is not None:
+                    row = (
+                        row
+                        + list(upper_lookup.get(fields[0], missing_upper).values())
+                        + list(lower_lookup.get(fields[1], missing_lower).values())
+                    )
+                dst.write(",".join(row) + "\n")
+                row_count += 1
+                if row_count % 100_000 == 0:
+                    print(f"\r{row_count:,} rows...", end="", file=sys.stderr)
+            print(f"\r{row_count:,} rows done -> {out_path}", file=sys.stderr)
 
     schema_path = out_path.with_suffix(out_path.suffix + ".schema.json")
     schema_path.write_text(
@@ -258,10 +271,10 @@ def build_parser():
             "--def",
             dest="def_file",
             default=None,
-            help="explicit .def path (auto-discovered by stem if omitted)",
+            help="explicit .def.json path (auto-discovered by stem if omitted)",
         )
 
-    p_inspect = sub.add_parser("inspect", help="print schema derived from a .def")
+    p_inspect = sub.add_parser("inspect", help="print schema derived from a .def.json")
     p_inspect.add_argument("def_file")
     p_inspect.set_defaults(func=cmd_inspect)
 
@@ -285,6 +298,13 @@ def build_parser():
         "--enrich-quanta",
         default=None,
         help="path to .states file to join full quanta into a .trans convert",
+    )
+    p_convert.add_argument(
+        "--engine",
+        choices=["python", "polars"],
+        default="python",
+        help="conversion backend; polars requires the 'polars' extra "
+        "(faster --enrich-quanta join at scale, see DESIGN.md)",
     )
     add_def_arg(p_convert)
     p_convert.set_defaults(func=cmd_convert)

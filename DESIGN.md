@@ -59,36 +59,31 @@ structured **`.def.json`** format — this turned out to be the actual
 "recent change" that motivated this whole project. It gives an explicit,
 ordered `dataset.states.states_file_fields` list: `name`, `desc`, `ffmt`
 (Fortran format), `cfmt` (C/Python format) per column. No comment-text
-guessing needed, and — unlike the old text format — optional-column order
-(`unc`/`tau`/`g_J` vs quanta) is stated directly, not inferred. `parse_def`
-auto-detects JSON vs legacy text by content (leading `{`), not by trusting
-the file extension.
+guessing needed, and optional-column order (`unc`/`tau`/`g_J` vs quanta)
+is stated directly, not inferred.
 
-Both real files pulled for testing (CO `4thplus`, H2S `AYT2`) are already
-`.def.json`. The **legacy line-based parser is kept as a fallback** for
-datasets that haven't migrated, described below, since it's still a real
-possibility across the full database.
+**Decision (2026-09-18): legacy text `.def` support dropped, not just
+deferred.** The old line-based parser (label-driven keyword matching on
+`value # comment` lines) was kept for a while as a fallback for datasets
+that hadn't migrated to `.def.json`. The whole ExoMol database has since
+moved to `.def.json`, so the fallback path was removed entirely —
+`parse_def` now only accepts `.def.json` (detected by leading `{`,
+still not by trusting the file extension) and raises clearly on anything
+else. `discover_def_files` in `cli.py` only looks for `*.def.json`.
 
-**Legacy text parser: label-driven, not positional.** Each `.def` line is
-`value # comment`; the parser matches on keywords in the comment (e.g.
-substrings `"lifetime"`, `"land"`, `"uncertain"`), not exact line position
-or exact comment string. This was the original fix for the motivating
-problem, before the JSON format's existence was confirmed; kept as the
-fallback path for pre-JSON `.def` files.
+Both real files pulled for testing (CO `4thplus`, H2S `AYT2`) are
+`.def.json`, as is everything else in the current database.
 
-Consequences of this choice (both parsers, JSON primarily by construction,
-legacy text by design):
+Consequences of this choice:
 
-- **Self-contained.** Building the schema from `.def` never touches
-  `.states`/`.trans`. `inspect` works with only a `.def` file present.
-- **Unrecognized/unmodelled fields never fail the parse or vanish.**
-  Legacy parser: any line whose comment matches no known keyword lands in
-  `extra_metadata`, keyed by its comment text. JSON parser: the top-level
-  sections not turned into `Column`s (`isotopologue`, `atoms`,
+- **Self-contained.** Building the schema from `.def.json` never touches
+  `.states`/`.trans`. `inspect` works with only a `.def.json` file present.
+- **Unrecognized/unmodelled fields never fail the parse or vanish.** The
+  top-level sections not turned into `Column`s (`isotopologue`, `atoms`,
   `irreducible_representations`, `partition_function`, `broad`) are kept
-  verbatim in `extra_metadata` too — not because they're unrecognized
-  (they're well-defined), just not schema-relevant for header generation.
-  Either way: visible on the `Schema` object, not lost, not specially typed.
+  verbatim in `extra_metadata` — not because they're unrecognized (they're
+  well-defined), just not schema-relevant for header generation. Visible
+  on the `Schema` object, not lost, not specially typed.
 - **Multiple quantum-number "cases"** (rare, mostly Duo-produced diatomics
   with e.g. Hund's case (a)/(b) alternative labellings): auto-pick the
   `.def`-declared default case, silently. No `--case` flag until real
@@ -98,12 +93,10 @@ legacy text by design):
 ## Schema object
 
 Per column: `name`, `dtype`, `unit`, `description`. `dtype` is derived
-from the JSON `.def`'s `ffmt` (Fortran format code — `I*`→`int64`,
-`F`/`E`/`D`/`G*`→`float64`, `A*`→`str`); the legacy text parser has no
-per-column format info, so its columns are typed generically
-(`int64`/`float64` for the four fixed base columns, `str` for quanta).
-The raw `ffmt`/`cfmt` strings themselves are **not** carried on `Column`
-— no round-trip-to-fixed-width use case in scope, only the derived dtype.
+from `.def.json`'s `ffmt` (Fortran format code — `I*`→`int64`,
+`F`/`E`/`D`/`G*`→`float64`, `A*`→`str`). The raw `ffmt`/`cfmt` strings
+themselves are **not** carried on `Column` — no round-trip-to-fixed-width
+use case in scope, only the derived dtype.
 
 Two renderings, chosen by where the output has to stay machine-parseable
 vs. where it's purely advisory:
@@ -186,6 +179,7 @@ exomol-headers inject   <mol>.states|.trans  [--def <path>]
 exomol-headers convert  <mol>.states|.trans  -o <out>
                          [--def <path>] [--compress none|gz|bz2]
                          [--enrich-quanta <mol>.states]
+                         [--engine python|polars]
 ```
 
 - Subcommands (verbs), not one command with mode flags.
@@ -200,10 +194,20 @@ exomol-headers convert  <mol>.states|.trans  -o <out>
 - If auto-discovery matches **more than one** `.def`/`.def.json`
   candidate: don't error, don't guess — print all matches and run the
   operation against all of them.
-- `--engine polars`/pyarrow backend from Q3 is **not implemented yet** —
-  `polars`/`pyarrow` are declared as installable extras in `pyproject.toml`
-  but nothing in `cli.py` dispatches to them; every `convert` today runs
-  the stdlib streaming path. See Open/Deferred.
+- **`--engine polars` (2026-09-18, pulled forward from deferred):**
+  implemented in `engines.py`, guarded import — `polars` stays an
+  optional extra (`exomol-headers[polars]`), never a core dependency.
+  Scoped deliberately narrow: it targets the one bottleneck the Testing
+  section's real numbers actually identified (the `--enrich-quanta`
+  join), not a general rewrite of row parsing. Rows are still
+  whitespace-split the same way as the `python` engine (`line.split()`)
+  — polars can't safely be pointed at these files as a native
+  ragged-whitespace CSV source — and every column is read/joined/written
+  as `Utf8`, never inferred to a numeric dtype, so values pass through
+  unmodified (no risk of `polars` reformatting `"1.050000"` or `"Inf"`).
+  The join itself (`.states` id → quanta, both upper and lower) is a
+  single vectorized `DataFrame.join`, replacing two per-row Python dict
+  lookups. `pyarrow`/Parquet output remains undone — see Open/Deferred.
 
 ## I/O details
 
@@ -239,8 +243,18 @@ zero mismatch warnings on either dataset). Confirms, with real data:
   ~52s pure Python/stdlib; ~14s without enrichment. Gives a real number
   for the "polars would meaningfully help at full-database scale" claim
   from Q3 — 35 chunks × ~52s ≈ 30 min pure-Python for one dataset's full
-  enrichment run, not disqualifying but a real candidate for the
-  polars/pyarrow optional backend once built.
+  enrichment run, not disqualifying but a real candidate for a polars
+  backend.
+- **`--engine polars` validated against the same H2S chunk (2026-09-18,
+  in an isolated `uv`-managed venv — polars isn't installed by the
+  stdlib-only core):** the enrich-quanta join dropped from ~48s to
+  ~30.6s (~1.6×) on this machine, and output was **byte-identical** to
+  the `python` engine's — same run, same file, `diff` clean, both with
+  and without `--enrich-quanta`. Confirms the join was in fact the
+  bottleneck (not I/O or the whitespace-split itself, which the polars
+  engine also still does in Python) and that reading/joining/writing
+  every column as `Utf8` doesn't reformat any value in practice, not
+  just in theory.
 - Real quantum-number columns are messier than the synthetic fixture
   assumed: names carry namespacing (`hunda:Lambda`, `Herzberg:v1`,
   `Auxiliary:SourceType`), and values include `Inf`/`NaN` (CO's ground
@@ -248,17 +262,20 @@ zero mismatch warnings on either dataset). Confirms, with real data:
   these — they pass through as opaque strings, which is correct: it's
   not this tool's job to interpret physics, only to label columns.
 
-Synthetic fixtures (`tests/fixtures/synthetic__test.*`) are kept
-alongside for the legacy text-`.def` code path, since neither real file
-obtained so far exercises it.
+The synthetic fixtures that previously lived at `tests/fixtures/` existed
+only to exercise the legacy text-`.def` code path; they were removed
+along with that parser (2026-09-18 — see "`.def` parsing strategy"
+above). Test coverage for `.def.json` parsing now runs entirely against
+the real `./data` fixtures and is skipped (not failed) when that
+directory isn't present.
 
 ## Open / deferred (explicitly out of scope for v1)
 
 - `--case <n>` flag for multi-case `.def` files — add only on real demand.
-- `--engine polars`/`pyarrow` backend dispatch — extras are declared
-  installable, no code path uses them yet. Real timing numbers now exist
-  (Testing section) to justify building this when a full-database-scale
-  run actually needs it.
+- `--engine polars` for `convert` is implemented (2026-09-18 — see CLI
+  shape and Testing above); `--format parquet` via `pyarrow` is still
+  undone — `pyarrow` stays a declared-but-unused extra until CSV-only
+  output turns out to be an actual limitation.
 - Directory/glob batch mode (discover and convert every `.trans` chunk in
   a directory in one command) — today it's one `convert` call per chunk
   file. Fine for the two-dataset scale tested so far; revisit if running
@@ -267,10 +284,6 @@ obtained so far exercises it.
 - Fixed-width `.states`/`.trans` parsing driven by `.def`'s Fortran format
   strings — simplified to whitespace-split for v1; every real column
   tested so far splits cleanly. Revisit only if a real file doesn't.
-- Legacy text-`.def` parser is implemented but has **only been exercised
-  against a hand-built synthetic fixture** — both real files obtained so
-  far are already `.def.json`. Needs a real pre-JSON `.def` file to
-  actually validate the fallback path.
 - PyPI name availability check — deferred to publish time.
 - Contribution/donation to `github.com/exomol` — deferred until the tool
   has proven itself standalone.

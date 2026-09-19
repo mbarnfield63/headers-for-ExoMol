@@ -1,15 +1,14 @@
-"""Self-contained .def parser — JSON primary, legacy text as fallback.
+"""Self-contained `.def.json` parser.
 
 ExoMol has moved from the old line-based `.def` (`value # comment`) to a
 structured `.def.json` file. The JSON gives an explicit, ordered
 `states_file_fields` list — name, description, and Fortran/C format per
 column — so there's no more guessing column order or matching comment
-text. Older datasets may still ship the legacy text `.def`; that parser
-is kept as a fallback, unchanged in spirit (label-driven, tolerant of
-unrecognized lines) but now the secondary path, not the primary one.
+text. The whole database has migrated, so only `.def.json` is supported;
+the legacy text format is not.
 
-Either way, parsing never touches the paired .states/.trans files —
-building a Schema needs only the .def(.json).
+Parsing never touches the paired .states/.trans files — building a
+Schema needs only the .def.json.
 """
 
 from __future__ import annotations
@@ -111,8 +110,7 @@ def parse_def_json(path: Path) -> Schema:
     )
 
     # Keep top-level metadata that isn't part of the column schema —
-    # visible, not lost, same "never drop what you don't specially
-    # handle" principle as the legacy parser's extra_metadata.
+    # visible on Schema, not silently dropped.
     for key in (
         "isotopologue",
         "atoms",
@@ -126,108 +124,19 @@ def parse_def_json(path: Path) -> Schema:
     return schema
 
 
-# --- legacy line-based .def parser (fallback for pre-JSON datasets) ----
-
-_FLAG_KEYWORDS = {
-    "uncertainty": re.compile(r"uncertain", re.I),
-    "lifetime": re.compile(r"lifetime", re.I),
-    "lande": re.compile(
-        r"land", re.I
-    ),  # covers "Lande"/"Landé" without depending on encoding
-}
-_QUANTA_COUNT_KEYWORD = re.compile(r"number of quantum", re.I)
-_QUANTA_LABEL_KEYWORD = re.compile(r"quantum (label|number)|label of.*quantum", re.I)
-
-# Base states-file columns present in every legacy-format ExoMol dataset.
-_BASE_COLUMNS = [
-    ("i", "int64", None, "state ID"),
-    ("E", "float64", "cm-1", "term value (energy)"),
-    ("g_tot", "int64", None, "total degeneracy"),
-    ("J", "float64", None, "total angular momentum quantum number"),
-]
-
-# Legacy-format optional-column order is unverified against a real
-# pre-JSON .def (none obtained yet). Wrong guess only warns (cli.py
-# mismatch check), never silently mislabels.
-_OPTIONAL_COLUMNS = {
-    "uncertainty": ("unc", "float64", "cm-1", "uncertainty in the energy"),
-    "lifetime": ("tau", "float64", "s", "radiative lifetime"),
-    "lande": ("g_J", "float64", None, "Landé g-factor"),
-}
-
-
-def _split_line(line: str):
-    line = line.strip()
-    if not line:
-        return None
-    if "#" in line:
-        value, comment = line.split("#", 1)
-    else:
-        value, comment = line, ""
-    return value.strip(), comment.strip()
-
-
-def parse_def_text(path: Path) -> Schema:
-    schema = Schema(source=path)
-
-    lines = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        parsed = _split_line(raw)
-        if parsed is not None:
-            lines.append(parsed)
-
-    pending_quanta_count = None
-    quanta_labels = []
-
-    for value, comment in lines:
-        matched = False
-        for key, pattern in _FLAG_KEYWORDS.items():
-            if pattern.search(comment):
-                schema.flags[key] = value.strip() in ("1", "true", "True")
-                matched = True
-                break
-        if matched:
-            continue
-
-        if _QUANTA_COUNT_KEYWORD.search(comment):
-            try:
-                pending_quanta_count = int(value.split()[0])
-            except (ValueError, IndexError):
-                pass
-            continue
-
-        if _QUANTA_LABEL_KEYWORD.search(comment):
-            token = value.split()[0] if value.split() else value
-            quanta_labels.append(token)
-            continue
-
-        key = comment if comment else value
-        if key:
-            schema.extra_metadata[key] = value
-
-    if pending_quanta_count is not None and len(quanta_labels) > pending_quanta_count:
-        quanta_labels = quanta_labels[:pending_quanta_count]
-
-    schema.columns = [Column(n, dt, u, d) for n, dt, u, d in _BASE_COLUMNS]
-    for key in ("uncertainty", "lifetime", "lande"):
-        if schema.flags.get(key):
-            n, dt, u, d = _OPTIONAL_COLUMNS[key]
-            schema.columns.append(Column(n, dt, u, d))
-    schema.columns.extend(
-        Column(label, "str", None, "quantum number (see .def for meaning)")
-        for label in quanta_labels
-    )
-    return schema
-
-
 # --- dispatch ------------------------------------------------------------
 
 
 def parse_def(path) -> Schema:
-    """Parse a .def or .def.json file into a Schema. Format is detected
-    by content (leading '{'), not by trusting the file extension."""
+    """Parse a `.def.json` file into a Schema.
+
+    Legacy text `.def` is not supported — the ExoMol database has fully
+    migrated to `.def.json`.
+    """
     path = Path(path)
     text = path.read_text(encoding="utf-8")
-    if text.lstrip().startswith("{"):
-        return parse_def_json(path)
-    return parse_def_text(path)
+    if not text.lstrip().startswith("{"):
+        raise ValueError(
+            f"{path}: not a .def.json file — legacy text .def is not supported"
+        )
+    return parse_def_json(path)

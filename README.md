@@ -29,7 +29,7 @@ Once published:
 
 ```
 pip install headers-for-ExoMol          # stdlib only, everything below works
-pip install headers-for-ExoMol[polars]  # reserved for a faster convert backend — not wired up yet
+pip install headers-for-ExoMol[polars]  # faster `convert --engine polars` (see Usage)
 pip install headers-for-ExoMol[parquet] # reserved for Parquet output — not wired up yet
 ```
 
@@ -52,13 +52,23 @@ take the `.states`/`.trans` file and auto-discover its `.def`/`.def.json`
 next to it by filename stem; pass `--def path/to/file.def.json` to
 override, or when auto-discovery finds more than one candidate.
 
+`convert` defaults to a pure-stdlib engine. Add `--engine polars` (needs
+the `[polars]` extra) for a faster `--enrich-quanta` join on large
+files — verified byte-identical output, ~1.6× faster on a real 7.2M-row
+H2S chunk, see `DESIGN.md` → Testing:
+
+```
+exomol-headers convert  1H2-32S__AYT2__00000-01000.trans.bz2 -o h2s_trans.csv \
+    --enrich-quanta 1H2-32S__AYT2.states.bz2 --engine polars
+```
+
 ## Status
 
-Early scaffold, validated against real data. ExoMol has moved to a
-structured `.def.json` format (confirmed against real CO and H2S
-downloads) — that's the primary parser path now; the original
-keyword-matching text parser is kept as a fallback for datasets that
-haven't migrated. See `DESIGN.md` → Testing for what's been verified.
+Early scaffold, validated against real data. ExoMol's whole database has
+moved to a structured `.def.json` format (confirmed against real CO and
+H2S downloads); this tool only supports that format now — legacy
+line-based `.def` is not parsed. See `DESIGN.md` → Testing for what's
+been verified.
 
 ## Credit
 

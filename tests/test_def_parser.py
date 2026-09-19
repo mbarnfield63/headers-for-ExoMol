@@ -1,12 +1,10 @@
 """Assert-based self-check. Run directly: python tests/test_def_parser.py
 (also picked up by pytest if installed — no framework required either way).
 
-Fixtures are hand-built and synthetic, not real ExoMol files (none
-downloaded yet — see DESIGN.md "Testing"). They exist to prove the
-mechanism, especially label-driven drift tolerance (Q17): the fixture
-.def deliberately includes one field ("Predissociation availability")
-that no keyword pattern recognizes, to check it's captured rather than
-breaking the parse.
+Only `.def.json` is supported (the ExoMol database has fully migrated),
+so these tests run against the real downloaded fixtures in `./data`
+(gitignored — see DESIGN.md "Testing") and skip if that data isn't
+present.
 """
 
 import sys
@@ -14,59 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from exomol_headers.def_parser import Schema, parse_def
+from exomol_headers.def_parser import parse_def
 from exomol_headers.io_utils import sniff_column_count
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def test_flags_and_quanta():
-    schema = parse_def(FIXTURES / "synthetic__test.def")
-    assert schema.flags == {"lifetime": True, "lande": False, "uncertainty": False}
-    assert [c.name for c in schema.columns[4:]] == ["tau", "v", "parity"]
-
-
-def test_unrecognized_field_kept_not_dropped():
-    schema = parse_def(FIXTURES / "synthetic__test.def")
-    matched = [
-        v for k, v in schema.extra_metadata.items() if "predissociation" in k.lower()
-    ]
-    assert matched == [
-        "0"
-    ], "unrecognized .def line should survive as metadata, not vanish"
-
-
-def test_states_columns_order():
-    schema = parse_def(FIXTURES / "synthetic__test.def")
-    names = [c.name for c in schema.states_columns()]
-    assert names == ["i", "E", "g_tot", "J", "tau", "v", "parity"]
-
-
-def test_column_count_matches_real_file():
-    schema = parse_def(FIXTURES / "synthetic__test.def")
-    columns = schema.states_columns()
-    actual = sniff_column_count(FIXTURES / "synthetic__test.states")
-    assert actual == len(columns), (
-        "fixture drifted out of sync with the .def — fix the fixture, "
-        "this is exactly the mismatch case cli.py warns about at runtime"
-    )
-
-
-def test_trans_sniffed_as_4_columns():
-    assert sniff_column_count(FIXTURES / "synthetic__test.trans") == 4
-
-
-def test_render_a_is_bare_names():
-    schema = parse_def(FIXTURES / "synthetic__test.def")
-    assert Schema.render_a(schema.states_columns()) == "i,E,g_tot,J,tau,v,parity"
-
-
-def test_render_c_includes_units_and_description():
-    schema = parse_def(FIXTURES / "synthetic__test.def")
-    rendered = Schema.render_c(schema.states_columns())
-    assert "[cm-1]" in rendered
-    assert "radiative lifetime" in rendered
-
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 _have_real_data = (DATA / "CO" / "12C-16O__4thplus.def.json").exists()
