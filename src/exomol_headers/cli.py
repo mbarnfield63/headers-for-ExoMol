@@ -19,6 +19,32 @@ _DATA_SUFFIXES = (".states", ".trans")
 _COMPRESSED_SUFFIXES = (".bz2", ".gz")
 
 
+def _strip_known_suffixes(name: str) -> str:
+    """Strip a trailing compression suffix, then a .states/.trans suffix."""
+    for suffix in _COMPRESSED_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    for suffix in _DATA_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name
+
+
+def _find_batch_files(directory: Path) -> list:
+    """.trans chunk files directly in a directory, sorted by name.
+
+    Batch mode is scoped to .trans (see DESIGN.md): .states files aren't
+    chunked in practice (one file per dataset), so batching offers no
+    benefit there — convert those individually as before.
+    """
+    files = set()
+    for pattern in ("*.trans", "*.trans.gz", "*.trans.bz2"):
+        files.update(directory.glob(pattern))
+    return sorted(files)
+
+
 def discover_def_files(data_path: Path) -> list:
     """Find the .def.json(s) sharing a data file's naming stem.
 
@@ -27,15 +53,7 @@ def discover_def_files(data_path: Path) -> list:
     guesses, never blocks on ambiguity; see DESIGN.md CLI shape).
     """
     directory = data_path.parent
-    stem = data_path.name
-    for suffix in _COMPRESSED_SUFFIXES:
-        if stem.endswith(suffix):
-            stem = stem[: -len(suffix)]
-            break
-    for suffix in _DATA_SUFFIXES:
-        if stem.endswith(suffix):
-            stem = stem[: -len(suffix)]
-            break
+    stem = _strip_known_suffixes(data_path.name)
 
     exact = directory / f"{stem}.def.json"
     if exact.exists():
@@ -180,55 +198,82 @@ def _quanta_lookup(states_path: Path, columns, suffix: str):
     return lookup
 
 
-def cmd_convert(args):
-    data_path = Path(args.data_file)
-    def_files = resolve_def_files(data_path, args.def_file)
+def _build_enrich_context(def_files, states_path: Path, engine: str) -> dict:
+    """Build the .states lookup once, for reuse across every file in a run.
+
+    In batch mode this is the actual payoff of batching (not just fewer
+    commands to type): one dataset's .states file is shared by every
+    .trans chunk, so building the lookup/DataFrame once and passing it to
+    every chunk's conversion avoids re-reading and re-indexing a
+    220k+-row file once per chunk.
+    """
+    states_schema = parse_def(def_files[0])
+    states_columns = _resolved_columns(states_schema, states_path)
+    quanta_names = [c.name for c in states_columns[4:]]
+    est = len(quanta_names) * 2
+    print(
+        f"--enrich-quanta: adding ~{est} columns per row "
+        f"(states file loaded into memory once, shared across all files)",
+        file=sys.stderr,
+    )
+    if engine == "polars":
+        return {
+            "quanta_names": quanta_names,
+            "id_name": states_columns[0].name,
+            "states_df": engines.load_states_frame(states_path, states_columns),
+        }
+    upper_lookup = _quanta_lookup(states_path, states_columns, "_upper")
+    lower_lookup = _quanta_lookup(states_path, states_columns, "_lower")
+    return {
+        "quanta_names": quanta_names,
+        "upper_lookup": upper_lookup,
+        "lower_lookup": lower_lookup,
+    }
+
+
+def _convert_file(data_path: Path, out_path: Path, def_files, args, enrich_ctx):
+    """Convert one .states/.trans file to CSV, using an already-built enrich_ctx.
+
+    enrich_ctx is only ever non-None for a .trans file: batch mode only
+    discovers .trans files (see _find_batch_files) and single-file mode
+    already validates _is_trans before building it (see cmd_convert).
+    """
     schema = parse_def(def_files[0])
     columns = _resolved_columns(schema, data_path)
     names = [c.name for c in columns]
 
-    enrich_quanta_names = None
-    states_path = None
-    upper_lookup = lower_lookup = None
-    if args.enrich_quanta:
-        if not _is_trans(data_path):
-            sys.exit("error: --enrich-quanta only applies to .trans conversion")
-        states_path = Path(args.enrich_quanta)
-        states_schema = parse_def(def_files[0])
-        states_columns = _resolved_columns(states_schema, states_path)
-        n_quanta = len(states_columns) - 4
-        est = n_quanta * 2
-        print(
-            f"--enrich-quanta: adding ~{est} columns per row "
-            f"(states file loaded into memory)",
-            file=sys.stderr,
-        )
-        enrich_quanta_names = [c.name for c in states_columns[4:]]
+    active_enrich = enrich_ctx
+    if active_enrich is not None:
+        quanta_names = active_enrich["quanta_names"]
         names = (
             names
-            + [f"{n}_upper" for n in enrich_quanta_names]
-            + [f"{n}_lower" for n in enrich_quanta_names]
+            + [f"{n}_upper" for n in quanta_names]
+            + [f"{n}_lower" for n in quanta_names]
         )
-        if args.engine == "python":
-            upper_lookup = _quanta_lookup(states_path, states_columns, "_upper")
-            lower_lookup = _quanta_lookup(states_path, states_columns, "_lower")
-            # fallback for a trans row whose id isn't found in .states (data
-            # error) — keeps column count aligned instead of silently
-            # shifting every field after it.
-            missing_upper = {f"{n}_upper": "" for n in enrich_quanta_names}
-            missing_lower = {f"{n}_lower": "" for n in enrich_quanta_names}
-
-    out_path = Path(args.out)
 
     if args.engine == "polars":
         base_names = [c.name for c in columns]
         enrich = (
-            {"states_path": states_path, "quanta_names": enrich_quanta_names}
-            if enrich_quanta_names is not None
+            {
+                "states_df": active_enrich["states_df"],
+                "quanta_names": active_enrich["quanta_names"],
+                "id_name": active_enrich["id_name"],
+            }
+            if active_enrich is not None
             else None
         )
         engines.convert(data_path, out_path, args.compress, base_names, enrich)
     else:
+        upper_lookup = active_enrich["upper_lookup"] if active_enrich else None
+        lower_lookup = active_enrich["lower_lookup"] if active_enrich else None
+        missing_upper = missing_lower = None
+        if active_enrich is not None:
+            # fallback for a trans row whose id isn't found in .states (data
+            # error) — keeps column count aligned instead of silently
+            # shifting every field after it.
+            missing_upper = {f"{n}_upper": "" for n in active_enrich["quanta_names"]}
+            missing_lower = {f"{n}_lower": "" for n in active_enrich["quanta_names"]}
+
         with open_text(data_path) as src, open_output(out_path, args.compress) as dst:
             dst.write(",".join(names) + "\n")
             row_count = 0
@@ -262,6 +307,51 @@ def cmd_convert(args):
     )
 
 
+def cmd_convert(args):
+    data_path = Path(args.data_file)
+
+    if data_path.is_dir():
+        files = _find_batch_files(data_path)
+        if not files:
+            sys.exit(f"error: no .trans chunk files found in {data_path}")
+
+        out_dir = Path(args.out)
+        if out_dir.exists() and not out_dir.is_dir():
+            sys.exit(f"error: -o must be a directory in batch mode, got {out_dir}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        def_files = resolve_def_files(files[0], args.def_file)
+
+        enrich_ctx = None
+        if args.enrich_quanta:
+            enrich_ctx = _build_enrich_context(
+                def_files, Path(args.enrich_quanta), args.engine
+            )
+
+        print(
+            f"batch: converting {len(files)} file(s) from {data_path} -> {out_dir}",
+            file=sys.stderr,
+        )
+        for i, data_file in enumerate(files, 1):
+            out_path = out_dir / (_strip_known_suffixes(data_file.name) + ".csv")
+            print(f"[{i}/{len(files)}] {data_file.name}", file=sys.stderr)
+            _convert_file(data_file, out_path, def_files, args, enrich_ctx)
+        return
+
+    def_files = resolve_def_files(data_path, args.def_file)
+
+    enrich_ctx = None
+    if args.enrich_quanta:
+        if not _is_trans(data_path):
+            sys.exit("error: --enrich-quanta only applies to .trans conversion")
+        enrich_ctx = _build_enrich_context(
+            def_files, Path(args.enrich_quanta), args.engine
+        )
+
+    out_path = Path(args.out)
+    _convert_file(data_path, out_path, def_files, args, enrich_ctx)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="exomol-headers")
     sub = p.add_subparsers(dest="command", required=True)
@@ -290,9 +380,21 @@ def build_parser():
     add_def_arg(p_inject)
     p_inject.set_defaults(func=cmd_inject)
 
-    p_convert = sub.add_parser("convert", help="stream-convert .states/.trans to CSV")
-    p_convert.add_argument("data_file")
-    p_convert.add_argument("-o", "--out", required=True)
+    p_convert = sub.add_parser(
+        "convert",
+        help="stream-convert .states/.trans to CSV; a directory batch-converts every .trans chunk in it",
+    )
+    p_convert.add_argument(
+        "data_file",
+        help="a .states/.trans file, or a directory to batch-convert every "
+        ".trans chunk in it",
+    )
+    p_convert.add_argument(
+        "-o",
+        "--out",
+        required=True,
+        help="output file, or output directory when data_file is a directory",
+    )
     p_convert.add_argument("--compress", choices=["none", "gz", "bz2"], default="none")
     p_convert.add_argument(
         "--enrich-quanta",

@@ -151,11 +151,24 @@ mode below.
   slicing only if a real file turns up where it doesn't (a value with an
   internal space, or truly abutting fields) — not before.
 - **Chunked `.trans` files** (large linelists split by wavenumber range,
-  sharing one `.def`, e.g. H2S/AYT2's 35 files): each file is one
-  `convert` invocation today — **not yet auto-batched**. Calling `convert`
-  once per chunk naturally gives "one output per chunk" (see Testing), but
-  there's no directory/glob mode yet that discovers and runs all chunks in
-  one command; see Open/Deferred.
+  sharing one `.def`, e.g. H2S/AYT2's 35 files): `convert` batches these.
+  **Decision (2026-09-20):** batching is triggered by input type, not a
+  new flag — if `convert`'s data-file positional is a **directory**,
+  every `*.trans`/`*.trans.gz`/`*.trans.bz2` file directly in it (not
+  recursive) is discovered and converted, `-o` then names an output
+  directory (auto-created), and each chunk gets its own
+  `<chunk-stem>.csv` + `.schema.json`, matching what running `convert`
+  once per chunk already produced (verified byte-identical, see Testing).
+  Scoped deliberately to `.trans`: `.states` files aren't chunked in
+  practice (one per dataset), so batching them adds nothing — convert a
+  `.states` file individually as before. The `.def.json` auto-discovery
+  is resolved once against the first chunk found and reused for the rest
+  (same dataset, same directory), not re-resolved (and re-printed) per
+  chunk. With `--enrich-quanta`, the `.states` lookup (Python-dict or,
+  for `--engine polars`, the `pl.DataFrame`) is built **once** and shared
+  across every chunk in the batch — the actual efficiency payoff beyond
+  fewer commands to type, since re-reading/re-indexing a 200k+-row
+  `.states` file per chunk would otherwise dominate for small chunks.
 - **`--enrich-quanta <states-file>`** (opt-in, off by default, `convert`
   on a `.trans` file only): joins each transition row with its upper/lower
   state's full quantum numbers, not just IDs. Implementation: builds an
@@ -176,7 +189,7 @@ Actual argparse signatures (`exomol_headers/cli.py`):
 exomol-headers inspect  <mol>.def|.def.json
 exomol-headers sidecar  <mol>.states|.trans  [--def <path>]
 exomol-headers inject   <mol>.states|.trans  [--def <path>]
-exomol-headers convert  <mol>.states|.trans  -o <out>
+exomol-headers convert  <mol>.states|.trans|<dir>  -o <out>|<out-dir>
                          [--def <path>] [--compress none|gz|bz2]
                          [--enrich-quanta <mol>.states]
                          [--engine python|polars]
@@ -208,6 +221,13 @@ exomol-headers convert  <mol>.states|.trans  -o <out>
   The join itself (`.states` id → quanta, both upper and lower) is a
   single vectorized `DataFrame.join`, replacing two per-row Python dict
   lookups. `pyarrow`/Parquet output remains undone — see Open/Deferred.
+- **Directory/glob batch mode (2026-09-20):** `convert`'s data-file
+  positional accepts a directory, batch-converting every `.trans` chunk
+  in it — see "`.trans`-specific handling" above for the full contract
+  (scope, output naming, shared `--enrich-quanta` cache). No new flag:
+  consistent with the rest of the CLI auto-detecting from what it's
+  pointed at (e.g. `.def.json` auto-discovery by stem) rather than adding
+  a mode switch.
 
 ## I/O details
 
@@ -255,6 +275,20 @@ zero mismatch warnings on either dataset). Confirms, with real data:
   engine also still does in Python) and that reading/joining/writing
   every column as `Utf8` doesn't reformat any value in practice, not
   just in theory.
+- **Directory/glob batch mode validated (2026-09-20):** ran against a
+  synthetic multi-chunk directory (real CO `.trans`/`.states` copied
+  under two chunk-style filenames) and against the real H2S chunk
+  directory. Batch output is **byte-identical** to running `convert`
+  once per file individually — checked for both the `python` and
+  `polars` engines, with and without `--enrich-quanta`. Also caught and
+  fixed a latent bug the refactor surfaced: the `polars` engine's
+  `.states` id-column join previously hardcoded the join-key name as
+  `"id"` (self-consistent only because it rebuilt its own throwaway
+  DataFrame every call under that same hardcoded name); pulling that
+  DataFrame construction out into a shared, cached `load_states_frame()`
+  exposed that the real column name is whatever `.def.json` declares
+  (`"ID"` for both CO and H2S) — fixed by threading the actual
+  schema-derived id-column name through instead of assuming a name.
 - Real quantum-number columns are messier than the synthetic fixture
   assumed: names carry namespacing (`hunda:Lambda`, `Herzberg:v1`,
   `Auxiliary:SourceType`), and values include `Inf`/`NaN` (CO's ground
@@ -276,11 +310,6 @@ directory isn't present.
   shape and Testing above); `--format parquet` via `pyarrow` is still
   undone — `pyarrow` stays a declared-but-unused extra until CSV-only
   output turns out to be an actual limitation.
-- Directory/glob batch mode (discover and convert every `.trans` chunk in
-  a directory in one command) — today it's one `convert` call per chunk
-  file. Fine for the two-dataset scale tested so far; revisit if running
-  35 commands by hand for one full H2S conversion turns out to be annoying
-  in practice rather than theoretically annoying.
 - Fixed-width `.states`/`.trans` parsing driven by `.def`'s Fortran format
   strings — simplified to whitespace-split for v1; every real column
   tested so far splits cleanly. Revisit only if a real file doesn't.

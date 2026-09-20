@@ -62,6 +62,19 @@ exomol-headers convert  1H2-32S__AYT2__00000-01000.trans.bz2 -o h2s_trans.csv \
     --enrich-quanta 1H2-32S__AYT2.states.bz2 --engine polars
 ```
 
+Point `convert` at a **directory** instead of a file to batch-convert every
+`.trans` chunk in it (large linelists are split across many chunk files
+sharing one `.def.json`/`.states` file, e.g. H2S/AYT2's 35 chunks) — `-o`
+then names the output directory, and each chunk gets its own
+`<chunk-stem>.csv` + `.schema.json`. With `--enrich-quanta`, the `.states`
+file is loaded into memory once and shared across every chunk, not
+rebuilt per file:
+
+```
+exomol-headers convert  1H2-32S__AYT2_trans_chunks/ -o h2s_csvs/ \
+    --enrich-quanta 1H2-32S__AYT2.states.bz2 --engine polars
+```
+
 ## Status
 
 Early scaffold, validated against real data. ExoMol's whole database has

@@ -56,6 +56,23 @@ def _import_polars():
     return pl
 
 
+def load_states_frame(states_path: Path, columns: list):
+    """Build the .states DataFrame once, for reuse across a --enrich-quanta batch.
+
+    Split out from convert() so a directory batch of .trans chunks sharing
+    one .states file can build this a single time and pass the same
+    DataFrame into every chunk's convert() call, instead of re-reading and
+    re-parsing a 200k+-row .states file once per chunk.
+    """
+    pl = _import_polars()
+    names = [c.name for c in columns]
+    return pl.DataFrame(
+        _read_records(states_path, len(names)),
+        schema={n: pl.Utf8 for n in names},
+        orient="row",
+    )
+
+
 def convert(
     data_path: Path,
     out_path: Path,
@@ -65,11 +82,13 @@ def convert(
 ) -> int:
     """Stream .states/.trans to CSV via polars. Returns the row count.
 
-    enrich, when given, is {"states_path": Path, "quanta_names": [str]}
-    — quanta_names are the bare (unsuffixed) names of every .states
-    column past the four fixed ones (i, E, g_tot, J). Mirrors cli.py's
-    --enrich-quanta contract: joins upper/lower quanta onto a .trans
-    conversion, matching on the trans file's first two columns
+    enrich, when given, is {"states_df": pl.DataFrame, "quanta_names": [str],
+    "id_name": str} — states_df and id_name come from load_states_frame()'s
+    input columns (id_name is the .states file's actual id-column name,
+    e.g. "ID" — never assumed), quanta_names are the bare (unsuffixed)
+    names of every .states column past the four fixed ones. Mirrors
+    cli.py's --enrich-quanta contract: joins upper/lower quanta onto a
+    .trans conversion, matching on the trans file's first two columns
     (base_names[0]/[1], always "upper"/"lower").
     """
     pl = _import_polars()
@@ -82,25 +101,20 @@ def convert(
     final_names = list(base_names)
 
     if enrich is not None:
-        states_path = enrich["states_path"]
+        states_df = enrich["states_df"]
         quanta_names = enrich["quanta_names"]
-        state_names = ["id", "E", "g_tot", "J"] + quanta_names
-        states_df = pl.DataFrame(
-            _read_records(states_path, len(state_names)),
-            schema={n: pl.Utf8 for n in state_names},
-            orient="row",
-        )
+        id_name = enrich["id_name"]
 
         upper_cols = {q: f"{q}_upper" for q in quanta_names}
         lower_cols = {q: f"{q}_lower" for q in quanta_names}
-        upper_df = states_df.select(["id"] + quanta_names).rename(upper_cols)
-        lower_df = states_df.select(["id"] + quanta_names).rename(lower_cols)
+        upper_df = states_df.select([id_name] + quanta_names).rename(upper_cols)
+        lower_df = states_df.select([id_name] + quanta_names).rename(lower_cols)
 
         trans_df = trans_df.join(
-            upper_df, left_on=base_names[0], right_on="id", how="left"
+            upper_df, left_on=base_names[0], right_on=id_name, how="left"
         )
         trans_df = trans_df.join(
-            lower_df, left_on=base_names[1], right_on="id", how="left"
+            lower_df, left_on=base_names[1], right_on=id_name, how="left"
         )
 
         joined_cols = list(upper_cols.values()) + list(lower_cols.values())
